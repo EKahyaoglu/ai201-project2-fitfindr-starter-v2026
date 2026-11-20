@@ -20,6 +20,8 @@ That last line is what your loop branches on. "Returns a list" earns nothing —
 the description has to say what is *in* the list.
 """
 
+import re
+
 import config  # noqa: F401 — you'll use this in search_listings
 from generate import generate
 from utils.data_loader import load_listings
@@ -67,19 +69,53 @@ def search_listings(
     realistic — thrift listings often have no brand. If something you write
     assumes a brand is always there, you will find out in unit 4.
 
-    TODO:
-        1. Load every listing with load_listings().
-        2. Filter by max_price and by size, when each is provided.
-        3. Score what's left by keyword overlap with `description`.
-        4. Drop anything scoring zero.
-        5. Sort by score, highest first, and return the listing dicts —
-           at most config.SEARCH_RESULT_LIMIT of them.
-
     Test it from a terminal before you move on:
         python -c "from tools import search_listings; print(search_listings('graphic tee', max_price=30))"
     """
-    # TODO: replace this with your implementation
-    return []
+    listings = load_listings()
+
+    def size_matches(listing_size: str, requested: str) -> bool:
+        listing_size = str(listing_size).strip().lower()
+        requested = str(requested).strip().lower()
+        if not requested:
+            return True
+
+        # Split slash and parenthetical/oversized variants, but compare whole
+        # size labels instead of using substring checks (so "s" is not "xl").
+        listing_tokens = {part.strip() for part in re.split(r"[/|,()]", listing_size) if part.strip()}
+        listing_tokens.discard("oversized")
+        requested_tokens = {part.strip() for part in re.split(r"[/|,()]", requested) if part.strip()}
+
+        return bool(listing_tokens & requested_tokens)
+
+    if max_price is not None:
+        try:
+            listings = [item for item in listings if float(item["price"]) <= float(max_price)]
+        except (KeyError, TypeError, ValueError):
+            listings = []
+
+    if size:
+        listings = [item for item in listings if size_matches(item.get("size", ""), size)]
+
+    description_terms = re.findall(r"[a-z0-9]+", description.lower())
+    stop_words = {"a", "an", "the", "for", "with", "in", "size", "under", "looking", "find", "me", "want", "of", "and", "or", "to"}
+    terms = [term for term in description_terms if term not in stop_words and len(term) > 1]
+
+    scored = []
+    for item in listings:
+        searchable = " ".join([
+            str(item.get("title", "")),
+            str(item.get("description", "")),
+            " ".join(item.get("style_tags", []) or []),
+            str(item.get("category", "")),
+            str(item.get("brand") or ""),
+        ]).lower()
+        score = sum(searchable.count(term) for term in terms)
+        if terms and score:
+            scored.append((score, item))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored[: config.SEARCH_RESULT_LIMIT]]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -102,18 +138,39 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
         raising or returning "". Unit 4 has you trigger the empty wardrobe on
         purpose, so decide now what it should do.
 
-    TODO:
-        1. Check whether wardrobe['items'] is empty.
-        2. If it is, ask the model for general styling ideas for this item.
-        3. If it isn't, format the wardrobe items into the prompt and ask for
-           specific combinations naming pieces the user already owns.
-        4. Return the model's response.
-
     Test it from a terminal before you move on:
         python -c "from tools import suggest_outfit; from utils.data_loader import get_example_wardrobe, load_listings; print(suggest_outfit(load_listings()[0], get_example_wardrobe()))"
     """
-    # TODO: replace this with your implementation
-    return ""
+    items = (wardrobe or {}).get("items") or []
+    item_details = (
+        f"Title: {new_item.get('title', 'item')}\n"
+        f"Category: {new_item.get('category', 'unknown')}\n"
+        f"Colors: {', '.join(new_item.get('colors', []) or [])}\n"
+        f"Style: {', '.join(new_item.get('style_tags', []) or [])}"
+    )
+
+    if not items:
+        prompt = (
+            f"Suggest one or two outfit ideas for this thrift find:\n{item_details}\n"
+            "The wardrobe is empty, so give general, practical styling advice "
+            "and name neutral pieces the user could add or already own."
+        )
+    else:
+        wardrobe_lines = []
+        for piece in items:
+            wardrobe_lines.append("- " + ", ".join(filter(None, [
+                str(piece.get("name", "")),
+                piece.get("category"),
+                ", ".join(piece.get("colors", []) or []),
+            ])))
+        prompt = (
+            f"Suggest one or two outfits that pair this thrift find with the user's wardrobe:\n"
+            f"{item_details}\nWardrobe:\n" + "\n".join(wardrobe_lines)
+            + "\nName actual wardrobe pieces and explain why each pairing works."
+        )
+
+    response = generate(prompt, system="You are a concise personal styling assistant.")
+    return str(response).strip()
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
@@ -144,13 +201,20 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
         • CACHE_ENABLED — the adapter handed back an answer it already had
         • TEMPERATURE   — at 0.0 the model gives the same words every time
 
-    TODO:
-        1. Guard against an empty or whitespace-only `outfit`.
-        2. Build a prompt with the item details and the outfit.
-        3. Call generate() and return the response.
-
     Test it from a terminal before you move on:
         python -c "from tools import create_fit_card; from utils.data_loader import load_listings; print(create_fit_card('jeans and white sneakers', load_listings()[0]))"
     """
-    # TODO: replace this with your implementation
-    return ""
+    if not isinstance(outfit, str) or not outfit.strip():
+        return f"{new_item.get('title', 'This thrift find')} is available for ${new_item.get('price', 'N/A')} on {new_item.get('platform', 'the marketplace')}."
+
+    prompt = (
+        "Write a two-to-four sentence social caption for this thrift find. "
+        "Mention the item title, exact price, and platform exactly once each. "
+        "Describe a specific vibe and make the outfit feel wearable.\n"
+        f"Item: {new_item.get('title', 'Untitled item')}\n"
+        f"Price: ${new_item.get('price', 'N/A')}\n"
+        f"Platform: {new_item.get('platform', 'unknown')}\n"
+        f"Outfit idea: {outfit.strip()}"
+    )
+    response = generate(prompt, system="Write concise, natural social-media fashion captions.")
+    return str(response).strip()

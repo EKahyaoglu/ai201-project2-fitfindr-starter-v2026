@@ -13,6 +13,8 @@ Build and test your three tools in `tools.py` first. Then come here.
     python agent.py          runs both example paths below
 """
 
+import re
+
 import config
 import trace
 from tools import search_listings, suggest_outfit, create_fit_card
@@ -63,52 +65,83 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         The session dict. **Check session["error"] first** — if it isn't None,
         the run ended early and the later fields will still be None.
 
-    ─────────────────────────────────────────────────────────────────────────
-    TODO — build this, following the branch rule you wrote in Milestone 2.
-
-      1. Start a session with new_session().
-
-      2. Count the times round the loop, and call trace.check_iterations(count)
-         on each one before you go again. It raises when the count passes
-         MAX_ITERATIONS in config.py — see trace.py.
-
-      3. Parse the query into a description, a size, and a max_price. Regex,
-         string splitting, or asking the model are all fine — say which you
-         chose in your README. Put the result in session["parsed"].
-
-      4. Call search_listings() with what you parsed.
-         Put the results in session["search_results"].
-
-         ⚠️ THIS IS THE BRANCH. If nothing came back:
-              - put a message in session["error"] saying what the user could
-                change — "No results" is not that message
-              - return the session
-              - do NOT call suggest_outfit with nothing
-
-      5. Choose an item — the first result is fine. Put it in
-         session["selected_item"].
-
-      6. Call suggest_outfit() with the selected item and the wardrobe.
-         Put the result in session["outfit_suggestion"].
-
-      7. Call create_fit_card() with the outfit and the item.
-         Put the result in session["fit_card"].
-
-      8. Return the session.
-
-    ─────────────────────────────────────────────────────────────────────────
-    IN UNIT 4 you come back and add two things:
-
-      • Trace calls. One per step. `trace.step("search_listings", inputs=...,
-        returned=...)` — see trace.py. Your README needs the output.
-
-      • A handler for ModelUnavailable, so a bad key produces a message rather
-        than a stack trace. The import is already at the top of this file.
+    The loop parses the query, searches local listings, and records every
+    handoff in session state and the trace. It stops on empty search results or
+    model-unavailable errors instead of continuing with invalid state.
     """
     session = new_session(query, wardrobe)
+    trace.start_trace()
 
-    # TODO: delete these two lines and build the loop.
-    session["error"] = "The planning loop isn't built yet — see the TODO in agent.py."
+    price_match = re.search(r"(?:under|below|max(?:imum)?(?: price)?|\$)\s*\$?(\d+(?:\.\d+)?)", query, re.I)
+    max_price = float(price_match.group(1)) if price_match else None
+
+    size_match = re.search(r"(?:\bsize\s+|\bin\s+)([A-Za-z0-9]+(?:/[A-Za-z0-9]+)?)", query, re.I)
+    size = size_match.group(1).upper() if size_match else None
+
+    description = re.sub(r"\b(?:under|below|max(?:imum)?(?: price)?)[^,]*", " ", query, flags=re.I)
+    description = re.sub(r"\b(?:size|in)\s+[A-Za-z0-9]+(?:/[A-Za-z0-9]+)?", " ", description, flags=re.I)
+    description = re.sub(r"\$\d+(?:\.\d+)?", " ", description)
+    description = re.sub(r"\s+", " ", description).strip()
+
+    session["parsed"] = {
+        "description": description,
+        "size": size,
+        "max_price": max_price,
+    }
+    trace.step("parse_query", inputs=query, returned=session["parsed"])
+
+    for iteration in range(1, config.MAX_ITERATIONS + 1):
+        trace.check_iterations(iteration)
+
+        try:
+            results = search_listings(description, size=size, max_price=max_price)
+        except Exception as exc:
+            session["error"] = f"Search could not be completed: {exc}"
+            trace.step("search_listings", inputs=session["parsed"], returned=[], note="branch: search error")
+            return session
+
+        session["search_results"] = results
+        trace.step("search_listings", inputs=session["parsed"], returned=results)
+
+        if not results:
+            changes = []
+            if size:
+                changes.append(f"a different size than {size}")
+            if max_price is not None:
+                changes.append(f"a price above ${max_price:g}")
+            changes.append("a broader description")
+            session["error"] = "No matching listings. Try " + " or ".join(changes) + "."
+            trace.step("planning_branch", returned="stop", note="branch: empty results, do not call more tools")
+            return session
+
+        session["selected_item"] = results[0]
+        trace.step("select_item", inputs=results, returned=session["selected_item"])
+
+        try:
+            outfit = suggest_outfit(session["selected_item"], wardrobe)
+        except ModelUnavailable as exc:
+            session["error"] = f"The styling model is unavailable: {exc}"
+            trace.step("suggest_outfit", returned="", note="branch: model unavailable")
+            return session
+
+        session["outfit_suggestion"] = outfit.strip() if isinstance(outfit, str) else ""
+        trace.step("suggest_outfit", inputs=session["selected_item"], returned=session["outfit_suggestion"])
+
+        try:
+            card = create_fit_card(session["outfit_suggestion"], session["selected_item"])
+        except ModelUnavailable as exc:
+            session["error"] = f"The fit-card model is unavailable: {exc}"
+            trace.step("create_fit_card", returned="", note="branch: model unavailable")
+            return session
+
+        session["fit_card"] = str(card).strip()
+        trace.step("create_fit_card", inputs={
+            "outfit": session["outfit_suggestion"],
+            "item": session["selected_item"],
+        }, returned=session["fit_card"])
+        return session
+
+    session["error"] = "The planning loop exceeded its iteration limit."
     return session
 
 

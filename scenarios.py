@@ -35,8 +35,24 @@ SCENARIOS = [
         "wardrobe": "empty",
         "criterion": None,
     },
-    # TODO: add what your criteria 3, 4 and 5 need.
-    #
+    {
+        "name": "selected item state handoff",
+        "query": "denim jacket under $50",
+        "wardrobe": "example",
+        "criterion": 3,
+    },
+    {
+        "name": "fit card structure",
+        "query": "vintage graphic tee under $30",
+        "wardrobe": "example",
+        "criterion": 4,
+    },
+    {
+        "name": "price ceiling",
+        "query": "jacket under $45",
+        "wardrobe": "example",
+        "criterion": 5,
+    },
     # Set "criterion" to the number in criteria.md that the scenario tests.
     # "criterion": None means a diagnostic run — useful to have, but it isn't
     # one of your five, and run_eval.py marks it as such in the table.

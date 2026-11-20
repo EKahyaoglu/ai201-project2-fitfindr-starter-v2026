@@ -39,7 +39,11 @@
 
 ## What This Does
 
-<!-- Three or four sentences: what a user asks for, and what they get back. -->
+FitFindr turns a thrift-shopping request into one listing, one outfit suggestion,
+and a ready-to-post fit card. A user describes an item, optional size, and price
+ceiling; the agent searches local listings, optionally uses their wardrobe, and
+stops before model calls when no listing matches. If the model is unavailable,
+the session records a readable error instead of crashing.
 
 
 
@@ -59,24 +63,24 @@
 
 ### `search_listings`
 
-- **What it does:**
-- **Inputs:** <!-- name and type each: `max_price` (float), not "a price" -->
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Filters local listings by exact size label and inclusive price ceiling, then ranks remaining listings by keyword overlap across title, description, tags, category, and brand.
+- **Inputs:** `description` (str), `size` (str or None), `max_price` (float or None).
+- **Returns:** A best-first list of up to `config.SEARCH_RESULT_LIMIT` listing dictionaries containing `id`, `title`, `description`, `category`, `style_tags`, `size`, `condition`, `price`, `colors`, `brand`, and `platform`.
+- **When it has nothing:** An empty list `[]`; the planning loop reports a suggested change and stops.
 
 ### `suggest_outfit`
 
-- **What it does:**
-- **Inputs:**
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Uses the selected listing and wardrobe to generate one or two practical outfit ideas. An empty wardrobe gets general styling advice rather than invented owned pieces.
+- **Inputs:** `new_item` (dict listing), `wardrobe` (dict with an `items` list).
+- **Returns:** A non-empty string with outfit suggestions.
+- **When it has nothing:** The model-adapter raises `ModelUnavailable`; the loop records it in `session["error"]` instead of continuing.
 
 ### `create_fit_card`
 
-- **What it does:**
-- **Inputs:**
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Generates a two-to-four sentence social caption for the selected listing and suggested outfit.
+- **Inputs:** `outfit` (str), `new_item` (dict listing).
+- **Returns:** A concise caption that is prompted to include the item title, exact price, platform, and vibe.
+- **When it has nothing:** If `outfit` is blank, it returns a descriptive fallback; if the model is unavailable, the loop records a readable session error.
 
 ---
 
@@ -93,13 +97,13 @@
      The grader checks your code against what you claim here, so the file and
      function have to be real. -->
 
-**Branch rule:**
+**Branch rule:** If `search_listings` returns an empty list, store an actionable message in `session["error"]`, print a branch trace step, and stop. Otherwise select the first result, call `suggest_outfit`, then call `create_fit_card`.
 
 **Where it lives:** `agent.py::run_agent`
 
-**How the query is parsed:** <!-- regex, string splitting, or asking the model — say which -->
+**How the query is parsed:** Regular expressions extract a price under/below/maximum or `$` amount and a size following `size` or `in`; the remaining text becomes the keyword description.
 
-**What moves through the session:** <!-- which fields, in what order -->
+**What moves through the session:** `query` and `wardrobe` start the session, `parsed` holds description/size/price, `search_results` holds every match, `selected_item` holds the first match for the next tool, and `outfit_suggestion` and `fit_card` hold the model outputs.
 
 ---
 
